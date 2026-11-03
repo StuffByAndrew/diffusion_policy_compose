@@ -10,7 +10,6 @@ import copy
 import json
 import hashlib
 from filelock import FileLock
-from threadpoolctl import threadpool_limits
 import concurrent.futures
 import multiprocessing
 from omegaconf import OmegaConf
@@ -191,7 +190,7 @@ class RobomimicReplayImageDataset(BaseImageDataset):
         return len(self.sampler)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        threadpool_limits(1)
+        # BLAS threads are limited via OMP_NUM_THREADS/MKL_NUM_THREADS=1 (slurm/env.sh); threadpoolctl aborts in forked workers here
         data = self.sampler.sample_sequence(idx)
 
         # to save RAM, only return first n_obs_steps of OBS

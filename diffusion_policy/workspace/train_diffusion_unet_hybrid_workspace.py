@@ -270,10 +270,12 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
                     # We can't copy the last checkpoint here
                     # since save_checkpoint uses threads.
                     # therefore at this point the file might have been empty!
-                    topk_ckpt_path = topk_manager.get_ckpt_path(metric_dict)
-
-                    if topk_ckpt_path is not None:
-                        self.save_checkpoint(path=topk_ckpt_path)
+                    # topk only on rollout epochs (monitor key exists there); latest.ckpt is saved every
+                    # checkpoint_every epochs so preempted (requeue) jobs lose little progress
+                    if (self.epoch % cfg.training.rollout_every) == 0:
+                        topk_ckpt_path = topk_manager.get_ckpt_path(metric_dict)
+                        if topk_ckpt_path is not None:
+                            self.save_checkpoint(path=topk_ckpt_path)
                 # ========= eval end for this epoch ==========
                 policy.train()
 

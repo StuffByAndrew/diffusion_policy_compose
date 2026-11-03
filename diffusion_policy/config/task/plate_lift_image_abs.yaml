@@ -1,0 +1,8 @@
+defaults:
+  - opposed_image_abs
+  - _self_
+
+name: plate_lift_image
+task_name: plate_lift
+dataset_path: /n/home00/aejxie/multi_robot/data/plate_lift/oracle/image_abs.hdf5
+max_steps: 300

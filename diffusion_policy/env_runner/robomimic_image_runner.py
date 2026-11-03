@@ -22,6 +22,7 @@ from diffusion_policy.env.robomimic.robomimic_image_wrapper import RobomimicImag
 import robomimic.utils.file_utils as FileUtils
 import robomimic.utils.env_utils as EnvUtils
 import robomimic.utils.obs_utils as ObsUtils
+import diffusion_policy.env.opposed  # registers the TwoArmOpposedEnv tasks with robosuite
 
 
 def create_env(env_meta, shape_meta, enable_render=True):
@@ -63,7 +64,8 @@ class RobomimicImageRunner(BaseImageRunner):
             past_action=False,
             abs_action=False,
             tqdm_interval_sec=5.0,
-            n_envs=None
+            n_envs=None,
+            env_kwargs=None
         ):
         super().__init__(output_dir)
 
@@ -80,6 +82,7 @@ class RobomimicImageRunner(BaseImageRunner):
             dataset_path)
         # disable object state observation
         env_meta['env_kwargs']['use_object_obs'] = False
+        env_meta['env_kwargs'].update(env_kwargs or {})
 
         rotation_transformer = None
         if abs_action:
