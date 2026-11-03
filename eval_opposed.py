@@ -27,29 +27,44 @@ from diffusion_policy.scripts import opposed_oracle as O
 METHODS = ['policy', 'oracle', 'idle']
 
 
-def policy_rollout(task, env, seed, policy, keys, n_obs, max_steps, rot_tf, video):
-    arm = env.env.active_arm
+def load_policy(checkpoint, out):
+    payload = torch.load(open(checkpoint, 'rb'), pickle_module=dill)
+    cfg = payload['cfg']
+    workspace = hydra.utils.get_class(cfg._target_)(cfg, output_dir=str(out))
+    workspace.load_payload(payload, exclude_keys=None, include_keys=None)
+    return (workspace.ema_model if cfg.training.use_ema else workspace.model).to('cuda').eval(), cfg
+
+
+def policy_rollout(metrics, env, seed, predict, device, keys, n_obs, max_steps, rot_tf, video):
+    """Each active arm gets its own generic-key obs history. predict(list of per-arm obs batches, in
+    raw.active_arms order) -> (n_act, 10 * n_active) base-frame actions, arm j in columns 10j:10j+10."""
+    raw = env.env
+    arms = raw.active_arms
     np.random.seed(seed)
     env.reset()
-    raw = env.env
 
-    def generic(o):
+    def generic(o, arm):
         return {g: o[arm_key(g, arm)].astype(np.float32) for g in keys}
 
-    hist = collections.deque([generic(env.get_observation())] * n_obs, maxlen=n_obs)
+    obs = env.get_observation()
+    hist = {arm: collections.deque([generic(obs, arm)] * n_obs, maxlen=n_obs) for arm in arms}
     log = collections.defaultdict(list)
     frames = []
-    policy.reset()
     while len(log['reward']) < max_steps:
-        batch = {k: torch.from_numpy(np.stack([h[k] for h in hist]))[None].to(policy.device) for k in keys}
+        batches = [{k: torch.from_numpy(np.stack([h[k] for h in hist[arm]]))[None].to(device) for k in keys}
+                   for arm in arms]
         with torch.no_grad():
-            act = policy.predict_action(batch)['action'][0].cpu().numpy()
-        for a10 in act:
+            act = predict(batches)
+        assert act.shape[1] == 10 * len(arms), act.shape
+        for a_t in act:
             a = np.zeros(14)
-            a[7 * arm:7 * arm + 7] = np.concatenate([a10[:3], rot_tf.inverse(a10[3:9]), a10[9:]])
+            for j, arm in enumerate(arms):
+                a10 = a_t[10 * j:10 * j + 10]
+                a[7 * arm:7 * arm + 7] = np.concatenate([a10[:3], rot_tf.inverse(a10[3:9]), a10[9:]])
             obs, _, _, _ = env.step(a)
-            hist.append(generic(obs))
-            for k, v in task.metrics(raw).items():
+            for arm in arms:
+                hist[arm].append(generic(obs, arm))
+            for k, v in metrics(raw).items():
                 log[k].append(v)
             if video:
                 frames.append(env.render(mode='rgb_array', height=256, width=256, camera_name=O.VIDEO_CAM))
@@ -69,11 +84,7 @@ def main(task_name, checkpoint, output_dir, train_log, n_seeds, n_video, max_ste
     max_steps = max_steps or task.MAX_STEPS
     out = pathlib.Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    payload = torch.load(open(checkpoint, 'rb'), pickle_module=dill)
-    cfg = payload['cfg']
-    workspace = hydra.utils.get_class(cfg._target_)(cfg, output_dir=str(out))
-    workspace.load_payload(payload, exclude_keys=None, include_keys=None)
-    policy = (workspace.ema_model if cfg.training.use_ema else workspace.model).to('cuda').eval()
+    policy, cfg = load_policy(checkpoint, out)
     shape_meta = cfg.task.shape_meta
     keys = list(shape_meta['obs'].keys())
     rot_tf = RotationTransformer('axis_angle', 'rotation_6d')
@@ -87,8 +98,9 @@ def main(task_name, checkpoint, output_dir, train_log, n_seeds, n_video, max_ste
         oenv = O.make_env(task, arm, images=False)
         for k in range(n_seeds):
             seed = O.EVAL_SEED0 + k
-            p_log, frames = policy_rollout(task, env, seed, policy, keys, cfg.n_obs_steps, max_steps, rot_tf,
-                                           k < n_video)
+            p_log, frames = policy_rollout(task.metrics, env, seed,
+                                           lambda bs: policy.predict_action(bs[0])['action'][0].cpu().numpy(),
+                                           policy.device, keys, cfg.n_obs_steps, max_steps, rot_tf, k < n_video)
             o_log, _ = O.oracle_rollout(oenv, task, seed)
             i_log, _ = O.rollout(oenv, task, lambda raw: O.idle_plan(raw, max_steps), seed=seed)
             for m, lg in zip(METHODS, (p_log, o_log, i_log)):

@@ -1,4 +1,5 @@
-"""Two opposed Pandas whose bases are related by a pi rotation about world z; exactly one arm is active per episode.
+"""Two opposed Pandas whose bases are related by a pi rotation about world z; one arm is active per episode, or both
+with active_arm='both' (for composing two copies of the per-arm policy).
 
 The active arm's absolute OSC_POSE action (pos, axis-angle, gripper) is given in that robot's base frame and its
 proprio is exposed in the base frame, so one arm-agnostic policy can drive either arm. The idle arm holds its reset
@@ -34,9 +35,10 @@ def rotz_pi_quat_wxyz(q):
 class TwoArmOpposedEnv(TwoArmEnv):
     def __init__(self, robots, active_arm, table_full_size=(0.8, 0.8, 0.05), table_friction=(1., 5e-3, 1e-4),
                  env_configuration='single-arm-opposed', use_object_obs=True, **kwargs):
-        assert active_arm in (0, 1), active_arm
+        assert active_arm in (0, 1, 'both'), active_arm
         assert env_configuration == 'single-arm-opposed', env_configuration
         self.active_arm = active_arm
+        self.active_arms = (0, 1) if active_arm == 'both' else (active_arm,)
         self.table_full_size = table_full_size
         self.table_friction = table_friction
         self.table_offset = np.array((0, 0, 0.8))
@@ -107,6 +109,9 @@ class TwoArmOpposedEnv(TwoArmEnv):
     def _pre_action(self, action, policy_step=False):
         assert len(action) == 14, len(action)
         assert not self.robots[0].controller.use_delta, f'{type(self).__name__} expects absolute OSC_POSE actions'
+        if self.active_arm == 'both':
+            world = np.concatenate([self.base_action_to_world(i, np.asarray(action[7 * i:7 * i + 7])) for i in (0, 1)])
+            return super()._pre_action(world, policy_step)
         if policy_step and self.sim.data.time == 0.:   # first control step of an episode (also after reset_to)
             self.idle_pose = self.eef_pose_world(1 - self.active_arm)
         assert self.idle_pose is not None
@@ -117,8 +122,11 @@ class TwoArmOpposedEnv(TwoArmEnv):
             self.idle_pose[:3, 3], T.quat2axisangle(T.mat2quat(self.idle_pose[:3, :3])), [-1.]])
         super()._pre_action(world, policy_step)
 
+    def touching(self, arm, geoms):
+        return self.check_contact(self.robots[arm].gripper, geoms)
+
     def active_touching(self, geoms):
-        return self.check_contact(self.robots[self.active_arm].gripper, geoms)
+        return self.touching(self.active_arm, geoms)
 
     # ---------------------------------------------------------------- observables
     def _setup_observables(self):

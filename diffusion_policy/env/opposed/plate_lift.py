@@ -10,6 +10,7 @@ from diffusion_policy.env.opposed.base import TwoArmOpposedEnv
 # Filled in by `plate_lift_oracle.py calibrate`.
 THETA_MAX = 1.047198      # rad, pivot angle the oracle lifts the near rim to
 DCOM_ORACLE = 0.143375    # m, COM rise achieved at THETA_MAX
+CLEARANCE_SUCCESS = 0.01  # m, active_arm='both': every bottom corner this far above the table counts as lifted
 
 
 class PlateWithRimObject(CompositeObject):
@@ -115,26 +116,38 @@ class TwoArmPlateLift(TwoArmOpposedEnv):
     def dcom(self):
         return float(self.plate_com[2] - self.rest_com_z)
 
-    def far_rim_bottom_height(self):
-        """Height above the table of the lowest point of the rim far from the active arm."""
+    def bottom_corner_height(self, y_signs):
+        """Height above the table of the lowest bottom corner on the given rim sides (+1: robot1's rim, -1: robot0's)."""
         R = self.sim.data.body_xmat[self.plate_body_id].reshape(3, 3)
         p = self.sim.data.body_xpos[self.plate_body_id]
         hx, hy = self.plate.half_size
         hz = self.plate.total_height / 2
-        far_y = hy if self.active_arm == 0 else -hy
-        corners = [p + R @ np.array([sx * hx, far_y, -hz]) for sx in (-1, 1)]
+        corners = [p + R @ np.array([sx * hx, sy * hy, -hz]) for sy in y_signs for sx in (-1, 1)]
         return min(c[2] for c in corners) - self.table_top_z
 
-    def active_holding(self):
-        """Active gripper touches its rim. (A two-pad pinch check is too strict: once the plate tilts, gravity along
+    def far_rim_bottom_height(self):
+        """Height above the table of the lowest point of the rim far from the active arm."""
+        return self.bottom_corner_height([1 if self.active_arm == 0 else -1])
+
+    def plate_clearance(self):
+        """Height above the table of the plate's lowest bottom corner (> 0: fully off the table)."""
+        return self.bottom_corner_height([-1, 1])
+
+    def holding(self, arm):
+        """Gripper `arm` touches its rim. (A two-pad pinch check is too strict: once the plate tilts, gravity along
         the finger axis pushes the weak Panda fingers sideways and the rim rests on one finger.)"""
-        return self.active_touching(self.plate.rim_geoms[self.active_arm])
+        return self.touching(arm, self.plate.rim_geoms[arm])
+
+    def active_holding(self):
+        return self.holding(self.active_arm)
 
     def reward(self, action=None):
-        """Plate COM rise [m], only while the active gripper holds its rim (so flinging scores 0)."""
-        return max(self.dcom, 0.) if self.active_holding() else 0.
+        """Plate COM rise [m], only while every active gripper holds its rim (so flinging scores 0)."""
+        return max(self.dcom, 0.) if all(self.holding(a) for a in self.active_arms) else 0.
 
     def _check_success(self):
+        if self.active_arm == 'both':
+            return self.reward() > 0 and self.plate_clearance() > CLEARANCE_SUCCESS
         assert DCOM_ORACLE is not None, 'run plate_lift_oracle.py calibrate first'
         return self.reward() >= 0.9 * DCOM_ORACLE
 
