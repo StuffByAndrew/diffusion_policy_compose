@@ -27,6 +27,16 @@ def arm_key(generic_key, arm):
     return generic_key.replace('_', f'{arm}_', 1)
 
 
+def look_at_quat_wxyz(pos, target):
+    """MuJoCo camera orientation (looks along its -z, image up = +y) at `pos` facing `target`, horizon level."""
+    f = np.asarray(target, dtype=float) - np.asarray(pos, dtype=float)
+    f /= np.linalg.norm(f)
+    right = np.cross(f, [0, 0, 1.])
+    assert np.linalg.norm(right) > 1e-3, 'camera looks straight down: horizon undefined'
+    right /= np.linalg.norm(right)
+    return T.convert_quat(T.mat2quat(np.stack([right, np.cross(right, f), -f], 1)), to='wxyz')
+
+
 def rotz_pi_quat_wxyz(q):
     """Rotate a wxyz quaternion by pi about world z."""
     return T.convert_quat(T.quat_multiply(np.array([0, 0, 1., 0]), T.convert_quat(q, to='xyzw')), to='wxyz')
@@ -59,14 +69,21 @@ class TwoArmOpposedEnv(TwoArmEnv):
         arena = TableArena(table_full_size=self.table_full_size, table_friction=self.table_friction,
                            table_offset=self.table_offset)
         arena.set_origin([0, 0, 0])
-        arena.set_camera(camera_name='agentview', pos=[0.8894354364730311, 0, 1.7383813133506494],
-                         quat=[0.6530981063842773, 0.2710406184196472, 0.27104079723358154, 0.6530979871749878])
-        cam0 = SHOULDER_CAM0_POS + np.array([0, 0.4 - depth / 2, 0])
-        arena.set_camera(camera_name='shouldercamera0', pos=cam0, quat=SHOULDER_CAM0_QUAT)
-        arena.set_camera(camera_name='shouldercamera1', pos=cam0 * np.array([-1, -1, 1]),
-                         quat=rotz_pi_quat_wxyz(SHOULDER_CAM0_QUAT))
+        cams = self._camera_poses()
+        arena.set_camera(camera_name='agentview', pos=cams['agentview'][0], quat=cams['agentview'][1])
+        cam0, quat0 = cams['shouldercamera0']
+        arena.set_camera(camera_name='shouldercamera0', pos=cam0, quat=quat0)
+        arena.set_camera(camera_name='shouldercamera1', pos=cam0 * np.array([-1, -1, 1]), quat=rotz_pi_quat_wxyz(quat0))
         self.model = ManipulationTask(mujoco_arena=arena, mujoco_robots=[r.robot_model for r in self.robots],
                                       mujoco_objects=self._load_objects(arena))
+
+    def _camera_poses(self):
+        """World (pos, wxyz quat) of 'agentview' (videos) and 'shouldercamera0' (robot0's policy camera; shouldercamera1
+        is its pi-about-z copy). Default: the two_arm_transport views, the shoulder camera following robot0's base."""
+        depth = self.table_full_size[1]
+        return {'agentview': ([0.8894354364730311, 0, 1.7383813133506494],
+                              [0.6530981063842773, 0.2710406184196472, 0.27104079723358154, 0.6530979871749878]),
+                'shouldercamera0': (SHOULDER_CAM0_POS + np.array([0, 0.4 - depth / 2, 0]), SHOULDER_CAM0_QUAT)}
 
     def _setup_references(self):
         super()._setup_references()
@@ -113,7 +130,7 @@ class TwoArmOpposedEnv(TwoArmEnv):
             world = np.concatenate([self.base_action_to_world(i, np.asarray(action[7 * i:7 * i + 7])) for i in (0, 1)])
             return super()._pre_action(world, policy_step)
         if policy_step and self.sim.data.time == 0.:   # first control step of an episode (also after reset_to)
-            self.idle_pose = self.eef_pose_world(1 - self.active_arm)
+            self.idle_pose = self._idle_pose(1 - self.active_arm)
         assert self.idle_pose is not None
         world = np.zeros(14)
         i, j = self.active_arm, 1 - self.active_arm
@@ -121,6 +138,10 @@ class TwoArmOpposedEnv(TwoArmEnv):
         world[7 * j:7 * j + 7] = np.concatenate([
             self.idle_pose[:3, 3], T.quat2axisangle(T.mat2quat(self.idle_pose[:3, :3])), [-1.]])
         super()._pre_action(world, policy_step)
+
+    def _idle_pose(self, arm):
+        """World eef pose the idle arm holds for the episode (default: where it starts)."""
+        return self.eef_pose_world(arm)
 
     def touching(self, arm, geoms):
         return self.check_contact(self.robots[arm].gripper, geoms)

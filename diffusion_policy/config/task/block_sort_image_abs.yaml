@@ -5,4 +5,4 @@ defaults:
 name: block_sort_image
 task_name: block_sort
 dataset_path: /n/home00/aejxie/multi_robot/data/block_sort/oracle/image_abs.hdf5
-max_steps: 900
+max_steps: 1300

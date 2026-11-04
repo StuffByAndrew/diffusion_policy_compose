@@ -10,7 +10,7 @@ import robosuite.utils.transform_utils as T
 from robosuite.models.objects import BoxObject
 from robosuite.utils.mjcf_utils import new_body, new_geom, new_inertial, new_joint
 
-from diffusion_policy.env.opposed.base import TwoArmOpposedEnv
+from diffusion_policy.env.opposed.base import TwoArmOpposedEnv, look_at_quat_wxyz
 
 N_PER_COLOR = 3
 BLOCK_RGBA = [(0.8, 0.1, 0.1, 1)] * N_PER_COLOR + [(0.1, 0.25, 0.85, 1)] * N_PER_COLOR   # color 0 red, 1 blue
@@ -19,7 +19,9 @@ ZONE_RGBA = [(1, 0.6, 0.6, 1), (0.6, 0.72, 1, 1)]
 
 class TwoArmBlockSort(TwoArmOpposedEnv):
     def __init__(self, robots, active_arm, block_half=0.025, zone_x=0.28, zone_half=(0.08, 0.14),
-                 spawn_half=(0.14, 0.12), min_spacing=0.09, table_full_size=(1.0, 0.6, 0.05), **kwargs):
+                 spawn_half=(0.14, 0.10), min_spacing=0.09, idle_offset=(-0.2, 0, 0.2), table_full_size=(1.0, 0.6, 0.05),
+                 **kwargs):
+        self.idle_offset = np.array(idle_offset)
         self.block_half = block_half
         self.zone_x = zone_x
         self.zone_half = np.array(zone_half)
@@ -27,6 +29,14 @@ class TwoArmBlockSort(TwoArmOpposedEnv):
         self.min_spacing = min_spacing
         self.n_blocks = 2 * N_PER_COLOR
         super().__init__(robots=robots, active_arm=active_arm, table_full_size=table_full_size, **kwargs)
+
+    def _camera_poses(self):
+        """Policy camera high above the table's near-right corner (robot0's view; both zones and the cubes stay
+        visible beside the arm); video camera oblique from the +x side."""
+        target = self.table_offset + np.array([0, 0.05, 0])
+        sh, av = np.array([0.35, -0.2, 2.3]), np.array([0.9, 0, 1.8])
+        return {'agentview': (av, look_at_quat_wxyz(av, self.table_offset)),
+                'shouldercamera0': (sh, look_at_quat_wxyz(sh, target))}
 
     def _load_objects(self, arena):
         zones = new_body(name='zones', pos=(0, 0, self.table_offset[2] + 0.001))
@@ -40,6 +50,13 @@ class TwoArmBlockSort(TwoArmOpposedEnv):
         self.blocks = [BoxObject(name=f'block{k}', size=[self.block_half] * 3, rgba=BLOCK_RGBA[k])
                        for k in range(self.n_blocks)]
         return self.blocks
+
+    def _idle_pose(self, arm):
+        """Tuck the idle hand back and up by idle_offset (its base frame: x forward, z up): with the bases at +-0.46
+        its start pose hovers over the table center, in the active arm's way."""
+        pose = self.eef_pose_world(arm)
+        pose[:3, 3] += self.base_pose(arm)[:3, :3] @ self.idle_offset
+        return pose
 
     def _sample_placements(self):
         """Uniform positions in the spawn rectangle with pairwise spacing >= min_spacing (rejection), uniform yaw."""
